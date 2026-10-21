@@ -17,12 +17,20 @@ def main():
     parser.add_argument("--track", default=DEFAULT_TRACK)
     parser.add_argument("--raceline", help="Validated .npz reference produced by optimize_raceline.py.")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--calibrate-speed", action="store_true",
+                        help="Reduce planned speeds until a rolling lap meets the lateral limit with 2%% reserve.")
+    parser.add_argument("--local-speed", action="store_true",
+                        help="Refine speed caps near measured violations; verify complete rolling laps.")
     parser.add_argument("--mode", choices=("planned", "constant"), default="planned")
     parser.add_argument("--speed", type=float, default=2.0, help="Constant-mode speed [m/s].")
     parser.add_argument("--lookahead", type=float, default=0.8)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--max-time", type=float, default=60.0)
     args = parser.parse_args()
+    if (args.calibrate_speed or args.local_speed) and args.mode != "planned":
+        parser.error("Speed validation requires --mode planned")
+    if args.calibrate_speed and args.local_speed:
+        parser.error("Choose either --calibrate-speed or --local-speed")
     road = load_track(args.track)
     if args.raceline:
         from optimize_raceline import load_reference
@@ -31,6 +39,21 @@ def main():
         track = road
     limits = Limits()
     plan = build_speed_plan(track, limits)
+    if args.calibrate_speed:
+        from speed_calibration import calibrate_speed_plan
+        plan, history = calibrate_speed_plan(
+            track, plan, limits, road_track=road, lookahead=args.lookahead,
+            dt=args.dt, max_time=args.max_time,
+        )
+        print(f"Validated speed scale: {history[-1][0]:.4f}")
+        print("Validation scope: one rolling lap at the selected lookahead and dt; 2% lateral reserve.")
+    if args.local_speed:
+        from speed_calibration import refine_speed_plan_locally
+        plan, _ = refine_speed_plan_locally(
+            track, plan, limits, road_track=road, lookahead=args.lookahead,
+            dt=args.dt, max_time=args.max_time,
+        )
+        print("Validation scope: local speed caps; one rolling lap; selected lookahead and dt; 2% lateral reserve.")
     sim = Simulation(track, plan, limits, args.lookahead, args.dt,
                      args.mode, args.speed, args.max_time, road_track=road)
     print(f"Original centerline length: {track.original_length:.3f} m")

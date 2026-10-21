@@ -68,6 +68,19 @@ def build_speed_plan(track, limits=None, window=0.25):
         limits.max_speed,
         np.sqrt(limits.lateral_acceleration / np.maximum(abs(curvature), 1e-6)),
     )
+    return _plan_from_limits(track, limits, curvature, local_limit, actual_offset)
+
+
+def apply_speed_caps(track, plan, limits, speed_caps):
+    """Re-run periodic acceleration/braking passes after lowering local caps."""
+    caps = np.asarray(speed_caps, dtype=float)
+    if caps.shape != plan.speed.shape or not np.all(np.isfinite(caps) & (caps > 0)):
+        raise ValueError("Speed caps must be positive finite values at every reference sample.")
+    caps = np.minimum(caps, plan.local_limit)
+    return _plan_from_limits(track, limits, plan.curvature, caps, plan.curvature_offset)
+
+
+def _plan_from_limits(track, limits, curvature, local_limit, actual_offset):
     squared = local_limit**2
     count = len(squared)
     for iteration in range(count + 1):

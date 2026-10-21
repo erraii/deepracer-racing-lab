@@ -168,6 +168,8 @@ requested constant speed. These are rolling-start experiments.
 | --- | --- | --- |
 | `--track` | Forever Raceway data path | Alternative six-column CCW track file |
 | `--headless` | Disabled | Run without opening an animation |
+| `--calibrate-speed` | Disabled | Validate rolling laps and conservatively scale speeds to meet the lateral limit with 2% reserve |
+| `--local-speed` | Disabled | Lower caps near measured lateral-demand violations and revalidate full laps |
 | `--mode` | `planned` | `planned` or `constant` speed command |
 | `--speed` | `2.0` | Constant-mode speed in m/s |
 | `--lookahead` | `0.8` | Steering lookahead in meters |
@@ -307,13 +309,75 @@ integration, control, or planning parameters require a fresh comparison. The
 earlier 12.28 s constant-speed result used a previous implementation and is not
 an exact regression target for this version.
 
+## Validate speed against the controller
+
+The geometry-based speed plan does not bound the actual steering demand of
+Pure Pursuit. To validate the optimized reference with the chosen controller:
+
+```bash
+uv run python main.py --headless --lookahead 0.6 \
+  --raceline data/racelines/forever_mincurv.npz --calibrate-speed
+```
+
+Remove `--headless` to animate the validated plan. The validation runs before
+the animation and repeats on each invocation; the `.npz` reference is unchanged.
+`inspect_track.py` still displays the original geometry-based speed plan.
+
+Each attempt runs the existing vehicle and controller for a full rolling lap.
+If peak lateral demand exceeds 98% of the planning limit (2.94 m/s^2 with the
+default limits), the whole speed profile is scaled down and another lap is run.
+The initial scale estimate uses the squared relationship between speed and
+lateral demand. Each adjusted profile must pass an actual simulation because
+the driven trajectory can change with speed. Scaling preserves the existing
+spatial acceleration and braking bounds. Steering is unchanged.
+
+Only a completed lap meeting the target is accepted. An off-track run, timeout,
+or failure to converge raises an error. The final normal simulation then runs
+with that plan, in either headless or animation mode. The printed reference lap
+estimate refers to the scaled plan, not the original plan.
+
+This is a conservative global reduction, not a minimum-time speed optimizer.
+Validation covers one rolling lap with the selected lookahead, time step, track,
+and deterministic vehicle model. Changing these settings requires revalidation.
+It does not establish tire grip, footprint clearance, repeated-lap stability,
+or AWS simulation performance. Runs without `--calibrate-speed` retain the
+original behavior for comparison. Constant-speed mode cannot use this option.
+
+## Local speed refinement and first training trial
+
+```bash
+uv run python main.py --headless --lookahead 0.6 \
+  --raceline data/racelines/forever_mincurv.npz --local-speed
+```
+
+This option starts from the original geometry-based plan. At each measured
+lateral-demand violation it lowers nearby speed caps, then runs the cyclic
+acceleration/braking passes again. Braking constraints propagate the slowdown
+backwards before the affected turn. Caps only decrease from the initial plan;
+unaffected straights can retain the original top speed.
+
+Each updated plan must complete a full rolling lap with peak demand at or below
+98% of the planning limit. After twelve unsuccessful local attempts, the global
+calibration method is applied to the current candidate as a fallback. Off-track,
+timeout, or exhausted global validation raises an error. This empirical method
+is not guaranteed to outperform global scaling on every track or setting.
+It cannot be combined with `--calibrate-speed`, and both require planned mode.
+As before, only one rolling lap with the selected controller settings is
+validated. The stored racing line is unchanged and no speed plan is cached.
+
+For the first real reinforcement-learning experiment, see `training/README.md`.
+The self-contained `training/reward_bootstrap.py` embeds the uploaded Forever
+Raceway optimized line and rewards proximity and direction broadly. It does
+not enforce the calibrated speed profile or upload the Pure Pursuit controller.
+It is intended for an initial short Camera/PPO experiment, not final racing.
+
 ## Tests
 
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
 
-The current suite has eleven tests covering:
+The current suite has nineteen tests covering:
 
 - Circle curvature, path projection, and boundary membership.
 - Periodic speed caps, acceleration/braking constraints, and interpolation.
@@ -326,6 +390,9 @@ The current suite has eleven tests covering:
 - Full-segment boundary validation, including segments with valid endpoints.
 - Optimization, serialization and rejection of mismatched source geometry.
 - An unusable boundary-margin setting.
+- Controller-validated speed reduction, preserved acceleration bounds, and rejection of failed or unverified laps.
+- Local speed-cap refinement with periodic acceleration/braking constraints.
+- Bootstrap reward direction, distance, speed, off-track behavior, and lap seam.
 
 These checks passed in the current version. They verify behavior under the
 implemented assumptions; they do not validate the model against a real car.
@@ -357,6 +424,7 @@ implemented assumptions; they do not validate the model against a real car.
 | `main.py` | Animation and headless simulation command line |
 | `track.py` | Shared geometry, sampling, projection, and boundaries |
 | `speed_planner.py` | Curvature and periodic speed planning |
+| `speed_calibration.py` | Conservative controller-validated speed scaling |
 | `vehicle.py` | Kinematic bicycle and bounded speed changes |
 | `simulation.py` | Steering, reference-speed tracking, and run metrics |
 | `optimize_raceline.py` | Constrained spline search, reference files, and comparison plots |
