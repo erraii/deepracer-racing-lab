@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from itertools import count
 from matplotlib.animation import FuncAnimation
+from vehicle import Vehicle
 
 def main():
     # Oval merkez çizgisi: uzunluklar metre cinsinden.
@@ -55,13 +56,21 @@ def main():
         zorder=5,
     )
 
+    target, = ax.plot(
+            [], [],
+            "bx",
+            markersize=10,
+            label="Target",
+            zorder=6,
+        )
+
     ax.set_aspect("equal")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_title("DeepRacer Racing Lab — First Track")
     ax.legend(loc="upper right")
 
-        # Merkez çizgisi boyunca biriken mesafe.
+    # Merkez çizgisi boyunca biriken mesafe.
     segment_lengths = np.hypot(np.diff(x), np.diff(y))
     distance_along_track = np.concatenate(
         ([0.0], np.cumsum(segment_lengths))
@@ -77,36 +86,83 @@ def main():
         va="top",
     )
 
+    vehicle = Vehicle(
+        x=float(x[0]),
+        y=float(y[0]),
+        yaw=np.pi / 2,
+    )
+
+    lookahead = 0.8  # Metre: çizgi üzerinde ne kadar ileri bakıyoruz?
+
     print(f"Track length: {track_length:.2f} m")
-    print(f"Expected lap time: {track_length / speed:.2f} s")
+    print(f"Speed: {speed:.2f} m/s")
+    print(f"Lookahead: {lookahead:.2f} m")
+
+    def initialize():
+        car.set_data([vehicle.x], [vehicle.y])
+        target.set_data([], [])
+        info.set_text("")
+        return car, target, info
 
     def update(frame):
-        elapsed_time = frame * dt
-        total_distance = speed * elapsed_time
+        # 1. Araca en yakın merkez çizgisi noktasını bul.
+        distances = np.hypot(
+            x[:-1] - vehicle.x,
+            y[:-1] - vehicle.y,
+        )
+        nearest = int(np.argmin(distances))
 
-        # Tur bitince yeniden pistin başlangıcına geç.
-        lap_distance = total_distance % track_length
-        completed_laps = int(total_distance / track_length)
+        # 2. Merkez çizgisi üzerinde biraz ileride hedef seç.
+        target_distance = (
+            distance_along_track[nearest] + lookahead
+        ) % track_length
 
-        # Gidilen mesafenin karşılık geldiği koordinatları bul.
-        car_x = np.interp(lap_distance, distance_along_track, x)
-        car_y = np.interp(lap_distance, distance_along_track, y)
-
-        car.set_data([car_x], [car_y])
-        info.set_text(
-            f"Speed: {speed:.1f} m/s\n"
-            f"Simulation time: {elapsed_time:.1f} s\n"
-            f"Completed laps: {completed_laps}"
+        target_x = np.interp(
+            target_distance, distance_along_track, x
+        )
+        target_y = np.interp(
+            target_distance, distance_along_track, y
         )
 
-        return car, info
+        # 3. Hedefin aracın yönüne göre açısını hesapla.
+        dx = target_x - vehicle.x
+        dy = target_y - vehicle.y
+
+        alpha = np.arctan2(dy, dx) - vehicle.yaw
+        target_range = max(np.hypot(dx, dy), 1e-6)
+
+        # 4. Pure Pursuit direksiyon açısını hesapla.
+        steering = np.arctan2(
+            2 * vehicle.wheelbase * np.sin(alpha),
+            target_range,
+        )
+
+        # 5. Direksiyonu uygula; araç modeli konumu güncellesin.
+        applied_steering = vehicle.step(speed, steering, dt)
+
+        # 6. Yeni konumu ve bilgileri göster.
+        car.set_data([vehicle.x], [vehicle.y])
+        target.set_data([target_x], [target_y])
+
+        center_error = np.min(
+            np.hypot(x[:-1] - vehicle.x, y[:-1] - vehicle.y)
+        )
+
+        info.set_text(
+            f"Speed: {speed:.1f} m/s\n"
+            f"Simulation time: {(frame + 1) * dt:.1f} s\n"
+            f"Steering: {np.degrees(applied_steering):.1f} deg\n"
+            f"Center error: {center_error:.3f} m"
+        )
+
+        return car, target, info
 
     fig.tight_layout()
 
-    # Pencere açıkken animasyon nesnesini bellekte tut.
     animation = FuncAnimation(
         fig,
         update,
+        init_func=initialize,
         frames=count(),
         interval=dt * 1000,
         blit=True,
