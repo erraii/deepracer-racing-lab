@@ -3,32 +3,82 @@ import numpy as np
 from itertools import count
 from matplotlib.animation import FuncAnimation
 from vehicle import Vehicle
+from pathlib import Path
+from matplotlib.path import Path as PlotPath
 
 def main():
-    # Oval merkez çizgisi: uzunluklar metre cinsinden.
-    a = 5.0
-    b = 3.0
-    track_width = 1.0
+    track_file = (
+        Path(__file__).resolve().parent
+        / "data/tracks/2024_reinvent_champ_ccw.npy"
+    )
 
-    angle = np.linspace(0, 2 * np.pi, 401)
+    track = np.load(track_file, allow_pickle=False)
 
-    x = a * np.cos(angle)
-    y = b * np.sin(angle)
+    if track.ndim != 2 or track.shape[1] != 6:
+        raise ValueError("Expected track data with six columns.")
 
-    # Merkez çizgisine dik, dışa bakan birim vektörler.
-    normal_x = np.cos(angle) / a
-    normal_y = np.sin(angle) / b
-    normal_length = np.hypot(normal_x, normal_y)
+    if not np.isfinite(track).all():
+        raise ValueError("Track contains invalid coordinates.")
 
-    normal_x /= normal_length
-    normal_y /= normal_length
+    if not np.allclose(track[0], track[-1]):
+        track = np.vstack((track, track[0]))
 
-    half_width = track_width / 2
+    # Orijinal merkez çizgisi boyunca mesafeler.
+    raw_center = track[:, :2]
+    raw_lengths = np.linalg.norm(
+        np.diff(raw_center, axis=0),
+        axis=1,
+    )
 
-    outer_x = x + half_width * normal_x
-    outer_y = y + half_width * normal_y
-    inner_x = x - half_width * normal_x
-    inner_y = y - half_width * normal_y
+    if np.any(raw_lengths < 1e-9):
+        raise ValueError("Track contains zero-length segments.")
+
+    raw_s = np.concatenate(([0.0], np.cumsum(raw_lengths)))
+
+    # Kontrol algoritması için yaklaşık 5 cm aralıklı noktalar.
+    # Orijinal dosyayı değiştirmiyoruz.
+    sample_count = int(np.ceil(raw_s[-1] / 0.05)) + 1
+    sample_s = np.linspace(0.0, raw_s[-1], sample_count)
+
+    sampled = np.column_stack([
+        np.interp(sample_s, raw_s, track[:, column])
+        for column in range(6)
+    ])
+
+    x = sampled[:, 0]
+    y = sampled[:, 1]
+
+    boundary_a = sampled[:, 2:4]
+    boundary_b = sampled[:, 4:6]
+
+    def signed_area(points):
+        return 0.5 * np.sum(
+            points[:-1, 0] * points[1:, 1]
+            - points[1:, 0] * points[:-1, 1]
+        )
+
+    # Standart x-y eksenlerinde pozitif alan CCW demektir.
+    if signed_area(sampled[:, :2]) <= 0:
+        raise ValueError("Expected counterclockwise track order.")
+
+    if abs(signed_area(boundary_a)) > abs(signed_area(boundary_b)):
+        outer, inner = boundary_a, boundary_b
+    else:
+        outer, inner = boundary_b, boundary_a
+
+    outer_x, outer_y = outer.T
+    inner_x, inner_y = inner.T
+
+    track_width = float(np.median(
+        np.linalg.norm(boundary_a - boundary_b, axis=1)
+    ))
+
+    outer_path = PlotPath(outer, closed=True)
+    inner_path = PlotPath(inner, closed=True)
+
+    print(f"Loaded track: {track_file.name}")
+    print(f"Original centerline length: {raw_s[-1]:.3f} m")
+    print(f"Median track width: {track_width:.3f} m")
 
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.set_facecolor("#b8d8a5")
@@ -67,7 +117,7 @@ def main():
     ax.set_aspect("equal")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
-    ax.set_title("DeepRacer Racing Lab — First Track")
+    ax.set_title("DeepRacer Racing Lab — Forever Raceway CCW")
     ax.legend(loc="upper right")
 
     # Merkez çizgisi boyunca biriken mesafe.
@@ -119,10 +169,15 @@ def main():
         va="top",
     )
 
+    initial_yaw = np.arctan2(
+        y[1] - y[0],
+        x[1] - x[0],
+    )
+
     vehicle = Vehicle(
         x=float(x[0]),
         y=float(y[0]),
-        yaw=np.pi / 2,
+        yaw=float(initial_yaw),
     )
 
     lookahead = 0.8  # Metre: çizgi üzerinde ne kadar ileri bakıyoruz?
@@ -214,7 +269,12 @@ def main():
         elapsed_time = (frame + 1) * dt
 
         # Şimdilik yalnızca arka aksın orta noktasını kontrol et.
-        offtrack = center_error > track_width / 2
+        position = (vehicle.x, vehicle.y)
+
+        offtrack = (
+            not outer_path.contains_point(position)
+            or inner_path.contains_point(position)
+        )
         completed = results["progress"] >= track_length
 
         status = "Running"
