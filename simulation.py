@@ -7,13 +7,15 @@ from vehicle import Vehicle
 
 class Simulation:
     def __init__(self, track, plan, limits, lookahead=0.8, dt=0.02,
-                 mode="planned", constant_speed=2.0, max_time=60.0):
+                 mode="planned", constant_speed=2.0, max_time=60.0, road_track=None):
         values = (lookahead, dt, constant_speed, max_time)
         if not all(math.isfinite(v) and v > 0 for v in values):
             raise ValueError("Simulation parameters must be positive and finite.")
         if mode not in ("planned", "constant"):
             raise ValueError("Unknown speed mode.")
         self.track, self.plan, self.limits = track, plan, limits
+        self.road_track = track if road_track is None else road_track
+        self.max_road_error = 0.0
         self.lookahead, self.dt = lookahead, dt
         self.mode, self.constant_speed, self.max_time = mode, constant_speed, max_time
         self.elapsed = self.progress = self.distance = self.max_error = 0.0
@@ -55,13 +57,15 @@ class Simulation:
         self.progress += (new_s - self.previous_s + track.length / 2) % track.length - track.length / 2
         self.previous_s = new_s
         self.max_error = max(self.max_error, self.error)
+        _, road_error = self.road_track.project(car.x, car.y)
+        self.max_road_error = max(self.max_road_error, road_error)
         self.min_speed = min(self.min_speed, car.speed)
         self.max_speed = max(self.max_speed, car.speed)
         self.max_speed_error = max(self.max_speed_error, abs(car.speed - self.target_speed))
         self.max_lateral_demand = max(self.max_lateral_demand, self.lateral_demand)
         if self.lateral_demand > self.limits.lateral_acceleration + 1e-6:
             self.over_limit_time += self.dt
-        if not track.contains(car.x, car.y):
+        if not self.road_track.contains(car.x, car.y):
             self.status = "OFF TRACK"
         elif self.progress >= track.length:
             self.status = "COMPLETED"
@@ -76,7 +80,8 @@ class Simulation:
         print(f"Simulation time: {self.elapsed:.2f} s")
         print(f"Distance driven: {self.distance:.3f} m")
         print(f"Observed speed range: {self.min_speed:.2f}-{self.max_speed:.2f} m/s")
-        print(f"Maximum center error: {self.max_error:.3f} m")
+        print(f"Maximum reference tracking error: {self.max_error:.3f} m")
+        print(f"Maximum road centerline offset: {self.max_road_error:.3f} m")
         print(f"Maximum target speed error: {self.max_speed_error:.3f} m/s")
         print(f"Reference lap estimate: {self.plan.lap_time:.2f} s")
         print(f"Maximum lateral demand: {self.max_lateral_demand:.3f} m/s^2")

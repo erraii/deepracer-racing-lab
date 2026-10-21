@@ -23,15 +23,19 @@ The current implementation includes:
 - Animated and headless simulation runs.
 - Lap, tracking-error, and lateral-demand measurements.
 - Automated checks for the geometry, planner, vehicle, and simulation.
+- A constrained periodic-spline optimizer that produces a minimum-curvature
+  reference candidate and recomputes its speed profile.
 
-Racing-line optimization and camera-based reinforcement learning remain future
-work. The reference path currently comes from the track centerline.
+The centerline remains the default reference. An optimized candidate can be
+selected explicitly with `--raceline`. Camera-based reinforcement learning
+remains future work.
 
 ## Requirements
 
 - Python 3.11 or newer.
 - [uv](https://docs.astral.sh/uv/) for dependency management.
 - NumPy and Matplotlib, installed through the project dependencies.
+- SciPy for racing-line optimization and loading optimized references.
 - A desktop graphical environment for interactive plots and animation.
 
 The automated tests use Python's standard-library `unittest` module.
@@ -49,6 +53,12 @@ installing dependencies or running commands:
 ```bash
 source scripts/env.sh
 uv sync
+```
+
+When applying the racing-line update to an existing checkout, also run:
+
+```bash
+uv add scipy
 ```
 
 `scripts/env.sh` places the virtual environment, uv cache, temporary files, and
@@ -163,9 +173,62 @@ requested constant speed. These are rolling-start experiments.
 | `--lookahead` | `0.8` | Steering lookahead in meters |
 | `--dt` | `0.02` | Simulation time step in seconds |
 | `--max-time` | `60.0` | Timeout in simulation seconds |
+| `--raceline` | None | Validated optimized `.npz` reference |
 
 The code default remains **0.8 m**. The commands above explicitly select
 **0.6 m**, the current working setting based on the comparison below.
+
+## Generate and compare a racing-line candidate
+
+```bash
+uv run python optimize_raceline.py
+```
+
+This searches for a periodic cubic spline with lower integrated squared
+curvature. Control positions move along local normals to the original path.
+The start position is fixed, and a small offset regularizer resolves nearly
+equivalent solutions. SLSQP uses analytic objective and constraint gradients.
+The track boundaries are fixed, with a default 0.15 m reference-point margin.
+The returned candidate is checked for closure, CCW order, self-intersections,
+boundary crossings, and full-polyline clearance before saving.
+
+The output is `data/racelines/forever_mincurv.npz`. It contains the closed path,
+boundary margin, objective value, and a fingerprint binding it to the source
+road geometry and sampling. Regenerate it if the road or sampling changes.
+Optimization failure produces an error rather than saving an unchecked path.
+The geometric checks apply to the exported polyline, not every point on the
+continuous spline.
+
+To skip the comparison plot:
+
+```bash
+uv run python optimize_raceline.py --no-show
+```
+
+Compare driving with the same limits and controller setting:
+
+```bash
+uv run python main.py --headless --lookahead 0.6
+uv run python main.py --headless --lookahead 0.6 --raceline data/racelines/forever_mincurv.npz
+uv run python main.py --lookahead 0.6 --raceline data/racelines/forever_mincurv.npz
+```
+
+Every reference gets a newly computed speed profile. The optimized path is a
+**local minimum-curvature candidate**, with no guarantee of globally minimum
+curvature or minimum lap time. It can be longer or slower than the centerline.
+The comparison plot's horizontal axis is normalized separately for each path;
+it is not a direct corner-by-corner time alignment.
+
+The boundary margin is a planning allowance for a point, not a swept vehicle
+footprint guarantee. A controller can deviate from the reference. Judge a
+candidate by completed laps, tracking error, track exits, lateral demand, and
+lap time together. Road-centerline offset and reference-tracking error are
+reported separately because intentional movement away from the road center
+is expected when following a racing line.
+
+Options: `--track`, `--output` (must end in `.npz`), `--margin`,
+`--max-iterations`, and `--no-show`. A typical optimization can take longer
+than a headless driving run. Iteration progress is printed every ten iterations.
 
 ## How the simulation works
 
@@ -250,7 +313,7 @@ an exact regression target for this version.
 uv run python -m unittest discover -s tests -v
 ```
 
-The current suite has seven tests covering:
+The current suite has eleven tests covering:
 
 - Circle curvature, path projection, and boundary membership.
 - Periodic speed caps, acceleration/braking constraints, and interpolation.
@@ -259,6 +322,10 @@ The current suite has seven tests covering:
 - Track closure and invalid source ordering.
 - Completed, off-track, and timeout simulation termination.
 - Invalid vehicle and planning limits.
+- Analytic optimizer gradients against numerical differences.
+- Full-segment boundary validation, including segments with valid endpoints.
+- Optimization, serialization and rejection of mismatched source geometry.
+- An unusable boundary-margin setting.
 
 These checks passed in the current version. They verify behavior under the
 implemented assumptions; they do not validate the model against a real car.
@@ -292,8 +359,11 @@ implemented assumptions; they do not validate the model against a real car.
 | `speed_planner.py` | Curvature and periodic speed planning |
 | `vehicle.py` | Kinematic bicycle and bounded speed changes |
 | `simulation.py` | Steering, reference-speed tracking, and run metrics |
+| `optimize_raceline.py` | Constrained spline search, reference files, and comparison plots |
+| `raceline_geometry.py` | Corridor clearance and full-polyline validation |
 | `inspect_track.py` | Shared track and speed-profile inspection |
 | `tests/test_models.py` | Automated checks |
+| `tests/test_raceline.py` | Optimization and geometry checks |
 | `scripts/env.sh` | Environment paths for 42 Linux |
 | `data/tracks/2024_reinvent_champ_ccw.npy` | Source track geometry |
 | `pyproject.toml` / `uv.lock` | Dependencies and reproducible environment |
