@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
-
+from itertools import count
+from matplotlib.animation import FuncAnimation
 
 def main():
     # Oval merkez çizgisi: uzunluklar metre cinsinden.
@@ -45,7 +46,14 @@ def main():
         color="white",
         linewidth=4,
     )
-    ax.plot(x[0], y[0], "ro", markersize=9, label="Car")
+
+    car, = ax.plot(
+        [x[0]], [y[0]],
+        "ro",
+        markersize=9,
+        label="Car",
+        zorder=5,
+    )
 
     ax.set_aspect("equal")
     ax.set_xlabel("x [m]")
@@ -53,7 +61,59 @@ def main():
     ax.set_title("DeepRacer Racing Lab — First Track")
     ax.legend(loc="upper right")
 
+        # Merkez çizgisi boyunca biriken mesafe.
+    segment_lengths = np.hypot(np.diff(x), np.diff(y))
+    distance_along_track = np.concatenate(
+        ([0.0], np.cumsum(segment_lengths))
+    )
+    track_length = distance_along_track[-1]
+
+    speed = 2.0  # m/s
+    dt = 0.02    # Her karede geçen simülasyon süresi.
+
+    info = ax.text(
+        0.02, 0.98, "",
+        transform=ax.transAxes,
+        va="top",
+    )
+
+    print(f"Track length: {track_length:.2f} m")
+    print(f"Expected lap time: {track_length / speed:.2f} s")
+
+    def update(frame):
+        elapsed_time = frame * dt
+        total_distance = speed * elapsed_time
+
+        # Tur bitince yeniden pistin başlangıcına geç.
+        lap_distance = total_distance % track_length
+        completed_laps = int(total_distance / track_length)
+
+        # Gidilen mesafenin karşılık geldiği koordinatları bul.
+        car_x = np.interp(lap_distance, distance_along_track, x)
+        car_y = np.interp(lap_distance, distance_along_track, y)
+
+        car.set_data([car_x], [car_y])
+        info.set_text(
+            f"Speed: {speed:.1f} m/s\n"
+            f"Simulation time: {elapsed_time:.1f} s\n"
+            f"Completed laps: {completed_laps}"
+        )
+
+        return car, info
+
     fig.tight_layout()
+
+    # Pencere açıkken animasyon nesnesini bellekte tut.
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=count(),
+        interval=dt * 1000,
+        blit=True,
+        repeat=False,
+        cache_frame_data=False,
+    )
+
     plt.show()
 
 
