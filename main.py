@@ -77,6 +77,39 @@ def main():
     )
     track_length = distance_along_track[-1]
 
+    points = np.column_stack((x, y))
+    segment_starts = points[:-1]
+    segment_vectors = np.diff(points, axis=0)
+
+    def project_to_track(px, py):
+        offset = np.array([px, py]) - segment_starts
+
+        fraction = np.clip(
+            np.sum(offset * segment_vectors, axis=1)
+            / segment_lengths**2,
+            0.0,
+            1.0,
+        )
+
+        projections = (
+            segment_starts
+            + fraction[:, None] * segment_vectors
+        )
+
+        distances = np.linalg.norm(
+            projections - np.array([px, py]),
+            axis=1,
+        )
+
+        index = int(np.argmin(distances))
+
+        position_s = (
+            distance_along_track[index]
+            + fraction[index] * segment_lengths[index]
+        )
+
+        return float(position_s), float(distances[index])
+
     speed = 2.0  # m/s
     dt = 0.02    # Her karede geçen simülasyon süresi.
 
@@ -94,6 +127,15 @@ def main():
 
     lookahead = 0.8  # Metre: çizgi üzerinde ne kadar ileri bakıyoruz?
 
+    initial_s, _ = project_to_track(vehicle.x, vehicle.y)
+
+    results = {
+        "previous_s": initial_s,
+        "progress": 0.0,
+        "max_error": 0.0,
+        "finished": False,
+    }
+
     print(f"Track length: {track_length:.2f} m")
     print(f"Speed: {speed:.2f} m/s")
     print(f"Lookahead: {lookahead:.2f} m")
@@ -105,6 +147,8 @@ def main():
         return car, target, info
 
     def update(frame):
+        if results["finished"]:
+            return car, target, info
         # 1. Araca en yakın merkez çizgisi noktasını bul.
         distances = np.hypot(
             x[:-1] - vehicle.x,
@@ -148,11 +192,56 @@ def main():
             np.hypot(x[:-1] - vehicle.x, y[:-1] - vehicle.y)
         )
 
+        position_s, center_error = project_to_track(
+            vehicle.x, vehicle.y
+        )
+
+        # Başlangıç çizgisini geçerken mesafenin sıfıra
+        # dönmesini hesaba katarak ilerlemeyi biriktir.
+        progress_step = (
+            position_s
+            - results["previous_s"]
+            + track_length / 2
+        ) % track_length - track_length / 2
+
+        results["progress"] += progress_step
+        results["previous_s"] = position_s
+
+        results["max_error"] = max(
+            results["max_error"], center_error
+        )
+
+        elapsed_time = (frame + 1) * dt
+
+        # Şimdilik yalnızca arka aksın orta noktasını kontrol et.
+        offtrack = center_error > track_width / 2
+        completed = results["progress"] >= track_length
+
+        status = "Running"
+
+        if offtrack or completed:
+            results["finished"] = True
+            status = "OFF TRACK" if offtrack else "COMPLETED"
+
+            animation.event_source.stop()
+
+            print("\n--- Run results ---")
+            print(f"Status: {status}")
+            print(f"Lookahead: {lookahead:.2f} m")
+            print(f"Speed: {speed:.2f} m/s")
+            print(f"Simulation time: {elapsed_time:.2f} s")
+            print(
+                f"Maximum center error: "
+                f"{results['max_error']:.3f} m"
+            )
+
         info.set_text(
+            f"Status: {status}\n"
             f"Speed: {speed:.1f} m/s\n"
-            f"Simulation time: {(frame + 1) * dt:.1f} s\n"
+            f"Simulation time: {elapsed_time:.2f} s\n"
             f"Steering: {np.degrees(applied_steering):.1f} deg\n"
-            f"Center error: {center_error:.3f} m"
+            f"Center error: {center_error:.3f} m\n"
+            f"Max error: {results['max_error']:.3f} m"
         )
 
         return car, target, info
